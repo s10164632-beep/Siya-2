@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Mic, MicOff, Loader2, Volume2, VolumeX, Keyboard, Send, Trash2 } from "lucide-react";
-import { getZoyaResponse, getZoyaAudio, resetZoyaSession as resetSiyaSession } from "./services/geminiService";
+import { Mic, MicOff, Loader2, Volume2, VolumeX, Keyboard, Send, Trash2, X, Settings2 } from "lucide-react";
+import { getSiaResponse, getSiaAudio, resetSiaSession as resetSiyaSession } from "./services/geminiService";
 import { processCommand } from "./services/commandService";
 import { LiveSessionManager } from "./services/liveService";
 import Visualizer from "./components/Visualizer";
 import PermissionModal from "./components/PermissionModal";
 import { playPCM } from "./utils/audioUtils";
 import { motion, AnimatePresence } from "motion/react";
+import { PersonalityMode } from "./services/personalityService";
 
 type AppState = "idle" | "listening" | "processing" | "speaking";
 
@@ -25,6 +26,7 @@ declare global {
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>("idle");
+  const [expression, setExpression] = useState<string>("smile");
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     const saved = localStorage.getItem("siya_chat_history");
     if (saved) {
@@ -37,11 +39,20 @@ export default function App() {
     return [];
   });
   const messagesRef = useRef(messages);
+  const [personalityMode, setPersonalityMode] = useState<PersonalityMode>(() => {
+    return (localStorage.getItem("siya_personality_mode") as PersonalityMode) || "Sassy";
+  });
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     messagesRef.current = messages;
     localStorage.setItem("siya_chat_history", JSON.stringify(messages));
   }, [messages]);
+
+  useEffect(() => {
+    localStorage.setItem("siya_personality_mode", personalityMode);
+    resetSiyaSession();
+  }, [personalityMode]);
 
   const [isMuted, setIsMuted] = useState(false);
 
@@ -66,6 +77,15 @@ export default function App() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, appState]);
+
+  const extractExpression = (text: string) => {
+    const matches = text.match(/\[(.*?)\]/g);
+    if (matches && matches.length > 0) {
+      const lastTag = matches[matches.length - 1];
+      return lastTag.replace('[', '').replace(']', '').trim();
+    }
+    return null;
+  };
 
   const handleTextCommand = useCallback(async (finalTranscript: string) => {
     if (!finalTranscript.trim()) {
@@ -94,7 +114,7 @@ export default function App() {
       
       if (!isMuted) {
         setAppState("speaking");
-        const audioBase64 = await getZoyaAudio(responseText);
+        const audioBase64 = await getSiaAudio(responseText);
         if (audioBase64) {
           await playPCM(audioBase64);
         }
@@ -109,19 +129,23 @@ export default function App() {
       }, 1500);
     } else {
       // 2. General Chit-Chat via Gemini
-      responseText = await getZoyaResponse(finalTranscript, messagesRef.current);
+      responseText = await getSiaResponse(finalTranscript, messagesRef.current, personalityMode);
+      
+      const newExpr = extractExpression(responseText);
+      if (newExpr) setExpression(newExpr);
+
       setMessages((prev) => [...prev, { id: Date.now().toString() + "-s", sender: "siya", text: responseText }]);
       
       if (!isMuted) {
         setAppState("speaking");
-        const audioBase64 = await getZoyaAudio(responseText);
+        const audioBase64 = await getSiaAudio(responseText);
         if (audioBase64) {
           await playPCM(audioBase64);
         }
       }
       setAppState("idle");
     }
-  }, [isMuted, isSessionActive]);
+  }, [isMuted, isSessionActive, personalityMode]);
 
   useEffect(() => {
     return () => {
@@ -145,16 +169,27 @@ export default function App() {
         setIsSessionActive(true);
         resetSiyaSession();
         
-        const session = new LiveSessionManager();
+        const session = new LiveSessionManager(personalityMode);
         session.isMuted = isMuted;
         liveSessionRef.current = session;
         
         session.onStateChange = (state) => {
           setAppState(state);
+          if (state === "idle") {
+            setIsSessionActive(false);
+          }
         };
-        
+
+        session.onError = (message) => {
+          setMessages((prev) => [...prev, { id: Date.now().toString() + "-error", sender: "siya", text: `[Error: ${message}]` }]);
+        };
+
         session.onMessage = (sender, text) => {
           setMessages((prev) => [...prev, { id: Date.now().toString() + "-" + sender, sender, text }]);
+          if (sender === "siya") {
+            const expr = extractExpression(text);
+            if (expr) setExpression(expr);
+          }
         };
         
         session.onCommand = (url) => {
@@ -164,9 +199,14 @@ export default function App() {
         };
 
         await session.start();
-      } catch (e) {
-        console.error("Failed to start session", e);
-        setShowPermissionModal(true);
+      } catch (e: any) {
+        if (e?.message === "Permission denied" || e?.name === "NotAllowedError") {
+          console.warn("Microphone permission denied by user.");
+          setShowPermissionModal(true);
+        } else {
+          console.error("Failed to start session", e);
+          setMessages((prev) => [...prev, { id: Date.now().toString() + "-error", sender: "siya", text: `[System: Failed to connect to server. ${e?.message || ''}]` }]);
+        }
         setIsSessionActive(false);
         setAppState("idle");
       }
@@ -197,39 +237,86 @@ export default function App() {
       </div>
 
       {/* Header */}
-      <header className="absolute top-0 left-0 w-full flex justify-between items-center z-20 shrink-0 px-6 py-4 md:px-12 md:py-6">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-violet-500 to-pink-500 flex items-center justify-center font-bold text-sm">
+      <header className="absolute top-0 left-0 w-full flex justify-between items-start z-20 shrink-0 px-6 py-4 md:px-12 md:py-6">
+        <div className="flex items-center gap-3 mt-1">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-violet-500 to-pink-500 flex items-center justify-center font-bold text-sm shadow-lg">
             S
           </div>
-          <h1 className="text-xl font-serif font-medium tracking-wide opacity-90">Siya</h1>
+          <div className="flex flex-col">
+            <h1 className="text-xl font-serif font-medium tracking-wide opacity-90 leading-tight">Siya</h1>
+            <span className="text-[10px] text-white/50 tracking-wider uppercase font-medium">Developed by Shivam Yadav</span>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {messages.length > 0 && (
+        
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => {
-                if (confirm("Are you sure you want to clear the chat history?")) {
-                  setMessages([]);
-                  resetSiyaSession();
-                }
-              }}
-              className="p-2 rounded-full bg-white/5 hover:bg-red-500/20 hover:text-red-400 transition-colors border border-white/10"
-              title="Clear Chat History"
+              onClick={() => setShowSettings(!showSettings)}
+              className={`p-2 rounded-full transition-colors border border-white/10 ${showSettings ? 'bg-white/20 text-white' : 'bg-white/5 hover:bg-white/10'}`}
+              title="Settings"
             >
-              <Trash2 size={18} className="opacity-70" />
+              <Settings2 size={18} className="opacity-70" />
             </button>
-          )}
-          <button
-            onClick={() => setIsMuted(!isMuted)}
-            className="p-2 rounded-full bg-white/5 hover:bg-white/10 transition-colors border border-white/10"
-            title={isMuted ? "Unmute" : "Mute"}
-          >
-            {isMuted ? (
-              <VolumeX size={18} className="opacity-70" />
-            ) : (
-              <Volume2 size={18} className="opacity-70" />
+
+            {messages.length > 0 && (
+              <button
+                onClick={() => {
+                  if (confirm("Are you sure you want to clear the chat history?")) {
+                    setMessages([]);
+                    resetSiyaSession();
+                  }
+                }}
+                className="p-2 rounded-full bg-white/5 hover:bg-red-500/20 hover:text-red-400 transition-colors border border-white/10"
+                title="Clear Chat History"
+              >
+                <Trash2 size={18} className="opacity-70" />
+              </button>
             )}
-          </button>
+            <button
+              onClick={() => setIsMuted(!isMuted)}
+              className="p-2 rounded-full bg-white/5 hover:bg-white/10 transition-colors border border-white/10"
+              title={isMuted ? "Unmute" : "Mute"}
+            >
+              {isMuted ? (
+                <VolumeX size={18} className="opacity-70" />
+              ) : (
+                <Volume2 size={18} className="opacity-70" />
+              )}
+            </button>
+          </div>
+
+          <AnimatePresence>
+            {showSettings && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                className="mt-2 bg-[#121212] border border-white/10 p-2 rounded-2xl shadow-2xl flex flex-col gap-1 w-48 backdrop-blur-xl"
+              >
+                <div className="px-3 py-1.5 text-xs text-white/40 uppercase tracking-wider font-semibold">Mode</div>
+                {(["Sassy"] as PersonalityMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      setPersonalityMode(mode);
+                      setShowSettings(false);
+                      // If active, tell the user they need to restart the session
+                      if (isSessionActive) {
+                        alert("Mode changed. Please end and restart the session to apply.");
+                      }
+                    }}
+                    className={`text-left px-3 py-2 rounded-xl text-sm transition-colors ${
+                      personalityMode === mode 
+                        ? "bg-violet-600/30 text-violet-300 font-medium border border-violet-500/30" 
+                        : "text-white/70 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </header>
 
@@ -257,7 +344,7 @@ export default function App() {
 
         {/* Center Visualizer (Fixed Full Screen Background) */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
-          <Visualizer state={appState} />
+          <Visualizer state={appState} expression={expression} />
         </div>
 
         {/* Right Column: User Status */}

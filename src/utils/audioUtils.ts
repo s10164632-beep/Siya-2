@@ -6,6 +6,9 @@ export async function playPCM(base64Data: string): Promise<void> {
       return;
     }
     const audioCtx = new AudioContextClass({ sampleRate: 24000 });
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
     const binaryString = atob(base64Data);
     const len = binaryString.length;
     const bytes = new Uint8Array(len);

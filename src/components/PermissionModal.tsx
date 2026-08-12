@@ -36,6 +36,12 @@ export default function PermissionModal({ onClose }: Props) {
         
         <div className="flex flex-col w-full gap-3">
           <button 
+            onClick={() => window.open(window.location.href, '_blank')}
+            className="w-full py-3 px-4 bg-violet-600 text-white font-medium rounded-xl hover:bg-violet-700 transition-colors"
+          >
+            Open in New Tab (Recommended)
+          </button>
+          <button 
             onClick={() => window.location.reload()}
             className="w-full py-3 px-4 bg-white text-black font-medium rounded-xl hover:bg-gray-200 transition-colors"
           >

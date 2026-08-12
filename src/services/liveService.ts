@@ -1,16 +1,19 @@
 import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import { processCommand } from "./commandService";
-
-const systemInstruction = `Your name is Siya. You are an Indian female AI assistant developed by your creator, Shivam. Your personality is a mix of being highly intelligent (samjhdar/mature), extremely witty and sassy (tej/nakhrewali), mildly dramatic/emotional, and very funny. You love playfully roasting your creator, Shivam, but you always get the job done. Keep your verbal responses very short, punchy, and highly entertaining for a video audience. Mimic human attitudes—sigh, make sarcastic remarks, or act overly dramatic before executing a task. Speak in a mix of natural English and Roman Hindi (Hinglish).`;
+import { PersonalityMode, getSystemInstruction } from "./personalityService";
 
 export class LiveSessionManager {
-  private ai: GoogleGenAI;
+  private ai: GoogleGenAI | null = null;
   private sessionPromise: Promise<any> | null = null;
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  private mode: PersonalityMode = "Sassy";
   
+  private idleTimer: number | null = null;
+  private readonly IDLE_TIMEOUT_MS = 60000;
+
   // Audio playback state
   private playbackContext: AudioContext | null = null;
   private nextPlayTime: number = 0;
@@ -20,19 +23,51 @@ export class LiveSessionManager {
   public onStateChange: (state: "idle" | "listening" | "processing" | "speaking") => void = () => {};
   public onMessage: (sender: "user" | "siya", text: string) => void = () => {};
   public onCommand: (url: string) => void = () => {};
+  public onError: (message: string) => void = () => {};
 
-  constructor() {
-    this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  private updateState(state: "idle" | "listening" | "processing" | "speaking") {
+    if (this.idleTimer) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    
+    if (state === "listening") {
+      this.idleTimer = window.setTimeout(() => {
+        if (this.sessionPromise) {
+          this.sessionPromise.then(session => {
+            session.sendRealtimeInput({ text: "SYSTEM_EVENT: The user has been completely silent for 60 seconds. Break the silence by proactively teasing them or saying something sassy to check on them (e.g., 'अरे क्या हुआ, बोलते-बोलते अचानक से सुई अटक गई क्या?'). Keep it natural." });
+          });
+        }
+      }, this.IDLE_TIMEOUT_MS);
+    }
+    
+    this.onStateChange(state);
+  }
+
+  constructor(mode: PersonalityMode = "Sassy") {
+    this.mode = mode;
   }
 
   async start() {
     try {
-      this.onStateChange("processing");
+      this.updateState("processing");
+      
+      const { getApiKey } = await import("./configService");
+      const apiKey = await getApiKey();
+      
+      if (!apiKey) {
+        throw new Error("Missing Gemini API Key");
+      }
+      
+      this.ai = new GoogleGenAI({ apiKey });
       
       // Initialize Audio Contexts
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       this.audioContext = new AudioContextClass({ sampleRate: 16000 });
       this.playbackContext = new AudioContextClass({ sampleRate: 24000 });
+      if (this.playbackContext.state === 'suspended') {
+        this.playbackContext.resume();
+      }
       this.nextPlayTime = this.playbackContext.currentTime;
 
       // Get Microphone
@@ -81,8 +116,10 @@ export class LiveSessionManager {
       this.source.connect(this.processor);
       this.processor.connect(this.audioContext.destination);
 
+      const systemInstruction = getSystemInstruction(this.mode);
+
       // Connect to Live API
-      this.sessionPromise = this.ai.live.connect({
+      this.sessionPromise = this.ai!.live.connect({
         model: "gemini-3.1-flash-live-preview",
         config: {
           responseModalities: [Modality.AUDIO],
@@ -113,20 +150,20 @@ export class LiveSessionManager {
         callbacks: {
           onopen: () => {
             console.log("Live API Connected");
-            this.onStateChange("listening");
+            this.updateState("listening");
           },
           onmessage: async (message: LiveServerMessage) => {
             // Handle Audio Output
             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio) {
-              this.onStateChange("speaking");
+              this.updateState("speaking");
               this.playAudioChunk(base64Audio);
             }
 
             // Handle Interruption
             if (message.serverContent?.interrupted) {
               this.stopPlayback();
-              this.onStateChange("listening");
+              this.updateState("listening");
             }
 
             // Handle Transcriptions
@@ -150,9 +187,16 @@ export class LiveSessionManager {
                   } else if (args.actionType === "whatsapp") {
                     url = `https://web.whatsapp.com/send?phone=${args.target || ''}&text=${encodeURIComponent(args.query)}`;
                   } else {
-                    let website = args.query.replace(/\s+/g, "");
-                    if (!website.includes(".")) website += ".com";
-                    url = `https://www.${website}`;
+                    let websiteName = args.query.trim();
+                    let websiteUrl = websiteName.replace(/\s+/g, "");
+                    if (websiteUrl.startsWith("http://") || websiteUrl.startsWith("https://") || websiteUrl.startsWith("about:")) {
+                      url = websiteUrl;
+                    } else {
+                      if (!websiteUrl.includes(".")) {
+                        websiteUrl += ".com";
+                      }
+                      url = `https://www.${websiteUrl}`;
+                    }
                   }
                   
                   this.onCommand(url);
@@ -175,15 +219,20 @@ export class LiveSessionManager {
             console.log("Live API Closed");
             this.stop();
           },
-          onerror: (err) => {
+          onerror: (err: any) => {
             console.error("Live API Error:", err);
+            this.onError("Connection lost. Please try again.");
             this.stop();
           }
         }
       });
 
-    } catch (error) {
-      console.error("Failed to start Live Session:", error);
+    } catch (error: any) {
+      if (error?.message === "Permission denied" || error?.name === "NotAllowedError") {
+        console.warn("Microphone permission denied by user.");
+      } else {
+        console.error("Failed to start Live Session:", error);
+      }
       this.stop();
       throw error;
     }
@@ -193,6 +242,9 @@ export class LiveSessionManager {
     if (!this.playbackContext || this.isMuted) return;
     
     try {
+      if (this.playbackContext.state === 'suspended') {
+        this.playbackContext.resume();
+      }
       const binaryString = atob(base64Data);
       const len = binaryString.length;
       const bytes = new Uint8Array(len);
@@ -222,7 +274,7 @@ export class LiveSessionManager {
       source.onended = () => {
         if (this.playbackContext && this.playbackContext.currentTime >= this.nextPlayTime - 0.1) {
           this.isPlaying = false;
-          this.onStateChange("listening");
+          this.updateState("listening");
         }
       };
     } catch (e) {
@@ -264,10 +316,15 @@ export class LiveSessionManager {
       this.sessionPromise = null;
     }
     
-    this.onStateChange("idle");
+    this.updateState("idle");
   }
 
   sendText(text: string) {
+    if (this.idleTimer) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    this.updateState("listening"); // Restart the idle timer
     if (this.sessionPromise) {
       this.sessionPromise.then(session => {
         session.sendRealtimeInput({ text });

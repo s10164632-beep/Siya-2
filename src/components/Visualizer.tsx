@@ -1,12 +1,14 @@
 import { motion } from "motion/react";
+import Avatar from "./Avatar";
 
 type VisualizerState = "idle" | "listening" | "processing" | "speaking";
 
 interface VisualizerProps {
   state: VisualizerState;
+  expression: string;
 }
 
-export default function Visualizer({ state }: VisualizerProps) {
+export default function Visualizer({ state, expression }: VisualizerProps) {
   const getRingAnimation = (index: number, reverse: boolean = false) => {
     const baseSpeed = state === "listening" ? 3 : state === "processing" ? 1.5 : state === "speaking" ? 2 : 15;
     return {
@@ -44,7 +46,7 @@ export default function Visualizer({ state }: VisualizerProps) {
     };
   };
 
-  // JARVIS color palette (Cyan/Blue) with Zoya's personality (Violet/Pink hints)
+  // JARVIS color palette (Cyan/Blue) with Sia's personality (Violet/Pink hints)
   const getTheme = () => {
     switch (state) {
       case "listening": return { color: "rgba(139, 92, 246, 1)", glow: "shadow-violet-500/60", border: "border-violet-400" };
@@ -95,19 +97,13 @@ export default function Visualizer({ state }: VisualizerProps) {
         className={`absolute w-[40%] h-[40%] rounded-full border-[4px] border-dotted ${theme.border} opacity-70`}
       />
 
-      {/* Core Circle */}
+      {/* Core Avatar */}
       <motion.div
         animate={getPulseAnimation()}
-        className={`absolute w-[25%] h-[25%] rounded-full border-[1px] ${theme.border} bg-black/40 backdrop-blur-md flex items-center justify-center shadow-[inset_0_0_30px_rgba(0,0,0,0.5)]`}
-        style={{ boxShadow: `0 0 40px ${theme.color}, inset 0 0 30px ${theme.color}` }}
+        className={`absolute rounded-full border-[1px] ${theme.border} bg-black/40 backdrop-blur-md flex items-center justify-center shadow-[inset_0_0_30px_rgba(0,0,0,0.5)] z-20 pointer-events-auto`}
+        style={{ boxShadow: `0 0 40px ${theme.color}, inset 0 0 30px ${theme.color}`, width: 'clamp(200px, 30vw, 400px)', height: 'clamp(200px, 30vw, 400px)' }}
       >
-        {/* Center Text */}
-        <div 
-          className="font-bold tracking-[0.3em] text-xl md:text-3xl lg:text-4xl text-white"
-          style={{ textShadow: `0 0 15px ${theme.color}, 0 0 30px ${theme.color}` }}
-        >
-          ZOYA
-        </div>
+        <Avatar expression={expression} isSpeaking={state === "speaking"} />
       </motion.div>
     </div>
   );

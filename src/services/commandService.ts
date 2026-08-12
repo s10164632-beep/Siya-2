@@ -12,13 +12,18 @@ export function processCommand(command: string): {
     !lowerCmd.includes("youtube") &&
     !lowerCmd.includes("spotify")
   ) {
-    let website = openMatch[1].trim().replace(/\s+/g, "");
-    if (!website.includes(".")) {
-      website += ".com";
+    let websiteName = openMatch[1].trim();
+    let websiteUrl = websiteName.replace(/\s+/g, "");
+    let finalUrl = websiteUrl;
+    if (!(websiteUrl.startsWith("http://") || websiteUrl.startsWith("https://") || websiteUrl.startsWith("about:"))) {
+      if (!websiteUrl.includes(".")) {
+        websiteUrl += ".com";
+      }
+      finalUrl = `https://www.${websiteUrl}`;
     }
     return {
-      action: `Opening ${openMatch[1]} for you, ugh.`,
-      url: `https://www.${website}`,
+      action: `Opening ${websiteName} for you.`,
+      url: finalUrl,
       isBrowserAction: true,
     };
   }
@@ -28,7 +33,7 @@ export function processCommand(command: string): {
   if (ytMatch) {
     const query = encodeURIComponent(ytMatch[1].trim());
     return {
-      action: `Playing ${ytMatch[1]} on YouTube. Don't judge my music taste.`,
+      action: `Playing ${ytMatch[1]} on YouTube.`,
       url: `https://www.youtube.com/results?search_query=${query}`,
       isBrowserAction: true,
     };

@@ -1,18 +1,23 @@
 import { GoogleGenAI } from "@google/genai";
-
-const systemInstruction = `Your name is Siya. You are an Indian female AI assistant developed by your creator, Shivam. Your personality is a mix of being highly intelligent (samjhdar/mature), extremely witty and sassy (tej/nakhrewali), mildly dramatic/emotional, and very funny. You love playfully roasting your creator, Shivam, but you always get the job done. Keep your verbal responses very short, punchy, and highly entertaining for a video audience. Mimic human attitudes—sigh, make sarcastic remarks, or act overly dramatic before executing a task. Speak in a mix of natural English and Roman Hindi (Hinglish).`;
+import { getApiKey } from "./configService";
+import { PersonalityMode, getSystemInstruction } from "./personalityService";
 
 let chatSession: any = null;
+let currentMode: PersonalityMode | null = null;
 
-export function resetZoyaSession() {
+export function resetSiaSession() {
   chatSession = null;
+  currentMode = null;
 }
 
-export async function getZoyaResponse(prompt: string, history: { sender: "user" | "siya", text: string }[] = []): Promise<string> {
+export async function getSiaResponse(prompt: string, history: { sender: "user" | "siya", text: string }[] = [], mode: PersonalityMode = "Sassy"): Promise<string> {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const apiKey = await getApiKey();
+    const ai = new GoogleGenAI({ apiKey });
     
-    if (!chatSession) {
+    if (!chatSession || currentMode !== mode) {
+      currentMode = mode;
+      
       // SLIDING WINDOW MEMORY: Keep only the last 20 messages to prevent "buffer full" (context window overflow)
       const recentHistory = history.slice(-20);
       
@@ -43,7 +48,7 @@ export async function getZoyaResponse(prompt: string, history: { sender: "user" 
       chatSession = ai.chats.create({
         model: "gemini-3.1-flash-lite-preview",
         config: {
-          systemInstruction,
+          systemInstruction: getSystemInstruction(mode),
         },
         history: formattedHistory,
       });
@@ -53,16 +58,18 @@ export async function getZoyaResponse(prompt: string, history: { sender: "user" 
     return response.text || "Ugh, fine. I have nothing to say.";
   } catch (error) {
     console.error("Gemini Error:", error);
-    return "Uff, mera dimaag kharab ho gaya hai. Try again later, Shivam.";
+    return "Uff, mera dimaag kharab ho gaya hai. Try again later, Shivam Yadav.";
   }
 }
 
-export async function getZoyaAudio(text: string): Promise<string | null> {
+export async function getSiaAudio(text: string): Promise<string | null> {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const cleanText = text.replace(/\[.*?\]/g, "").trim();
+    const apiKey = await getApiKey();
+    const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text }] }],
+      contents: [{ parts: [{ text: cleanText }] }],
       config: {
         responseModalities: ["AUDIO"],
         speechConfig: {
