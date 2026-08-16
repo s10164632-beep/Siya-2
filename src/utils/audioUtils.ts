@@ -15,11 +15,12 @@ export async function playPCM(base64Data: string): Promise<void> {
     for (let i = 0; i < len; i++) {
       bytes[i] = binaryString.charCodeAt(i);
     }
-    const buffer = new Int16Array(bytes.buffer);
-    const audioBuffer = audioCtx.createBuffer(1, buffer.length, 24000);
+    const dataView = new DataView(bytes.buffer);
+    const pcmLength = Math.floor(len / 2);
+    const audioBuffer = audioCtx.createBuffer(1, pcmLength, 24000);
     const channelData = audioBuffer.getChannelData(0);
-    for (let i = 0; i < buffer.length; i++) {
-      channelData[i] = buffer[i] / 32768.0;
+    for (let i = 0; i < pcmLength; i++) {
+      channelData[i] = dataView.getInt16(i * 2, true) / 32768.0;
     }
     const source = audioCtx.createBufferSource();
     source.buffer = audioBuffer;

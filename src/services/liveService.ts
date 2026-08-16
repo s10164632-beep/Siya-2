@@ -3,6 +3,7 @@ import { processCommand } from "./commandService";
 import { PersonalityMode, getSystemInstruction } from "./personalityService";
 
 export class LiveSessionManager {
+  private isActive: boolean = false;
   private ai: GoogleGenAI | null = null;
   private sessionPromise: Promise<any> | null = null;
   private audioContext: AudioContext | null = null;
@@ -49,63 +50,86 @@ export class LiveSessionManager {
   }
 
   async start() {
+    this.isActive = true;
     try {
       this.updateState("processing");
       
-      const { getApiKey } = await import("./configService");
-      const apiKey = await getApiKey();
-      
-      if (!apiKey) {
-        throw new Error("Missing Gemini API Key");
-      }
-      
-      this.ai = new GoogleGenAI({ apiKey });
-      
-      // Initialize Audio Contexts
+      // Initialize Audio Contexts synchronously to bypass browser autoplay blocks
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      this.audioContext = new AudioContextClass({ sampleRate: 16000 });
-      this.playbackContext = new AudioContextClass({ sampleRate: 24000 });
+      if (!this.audioContext) {
+        this.audioContext = new AudioContextClass({ sampleRate: 16000 });
+      }
+      if (!this.playbackContext) {
+        this.playbackContext = new AudioContextClass({ sampleRate: 24000 });
+      }
       if (this.playbackContext.state === 'suspended') {
         this.playbackContext.resume();
       }
       this.nextPlayTime = this.playbackContext.currentTime;
 
+      const { getApiKey } = await import("./configService");
+      const apiKey = await getApiKey();
+      
+      if (!this.isActive) return;
+
+      if (!apiKey) {
+        throw new Error("Missing Gemini API Key");
+      }
+      
+      this.ai = new GoogleGenAI({ apiKey });
+
       // Get Microphone
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
-          channelCount: 1,
-          sampleRate: 16000,
           echoCancellation: true,
           noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 16000,
         } 
       });
-
+      
+      if (!this.isActive) {
+        this.mediaStream.getTracks().forEach(t => t.stop());
+        this.mediaStream = null;
+        return;
+      }
+      
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
 
       this.processor.onaudioprocess = (e) => {
-        if (!this.sessionPromise) return;
-        const inputData = e.inputBuffer.getChannelData(0);
-        const pcm16 = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          let s = Math.max(-1, Math.min(1, inputData[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
+        if (!this.sessionPromise || !this.isActive) return;
         
-        // Convert to base64
-        const buffer = new ArrayBuffer(pcm16.length * 2);
+        const inputData = e.inputBuffer.getChannelData(0);
+
+        // Calculate RMS volume for Noise Gate
+        let sumSquares = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          sumSquares += inputData[i] * inputData[i];
+        }
+        const rms = Math.sqrt(sumSquares / inputData.length);
+        const NOISE_GATE_THRESHOLD = 0.015; // Ignore background noise below this volume
+
+        // Convert Float32 to Int16 PCM
+        const buffer = new ArrayBuffer(inputData.length * 2);
         const view = new DataView(buffer);
-        for (let i = 0; i < pcm16.length; i++) {
+        const pcm16 = new Int16Array(buffer);
+        
+        for (let i = 0; i < inputData.length; i++) {
+          let s = rms < NOISE_GATE_THRESHOLD ? 0 : Math.max(-1, Math.min(1, inputData[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
           view.setInt16(i * 2, pcm16[i], true);
         }
         
+        // If entirely silence, we can optionally skip sending, but sending zeroes keeps stream alive
         let binary = '';
         const bytes = new Uint8Array(buffer);
         for (let i = 0; i < bytes.byteLength; i++) {
           binary += String.fromCharCode(bytes[i]);
         }
         const base64Data = btoa(binary);
-
+        
         this.sessionPromise.then(session => {
           session.sendRealtimeInput({
             audio: { data: base64Data, mimeType: 'audio/pcm;rate=16000' }
@@ -149,28 +173,30 @@ export class LiveSessionManager {
         },
         callbacks: {
           onopen: () => {
+            if (!this.isActive) return;
             console.log("Live API Connected");
             this.updateState("listening");
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Handle Audio Output
-            const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            if (base64Audio) {
-              this.updateState("speaking");
-              this.playAudioChunk(base64Audio);
+            if (!this.isActive) return;
+            // Handle Model Turn
+            const parts = message.serverContent?.modelTurn?.parts;
+            if (parts) {
+              for (const part of parts) {
+                if (part.inlineData?.data) {
+                  this.updateState("speaking");
+                  this.playAudioChunk(part.inlineData.data);
+                }
+                if (part.text) {
+                   this.onMessage("siya", part.text);
+                }
+              }
             }
 
             // Handle Interruption
             if (message.serverContent?.interrupted) {
               this.stopPlayback();
               this.updateState("listening");
-            }
-
-            // Handle Transcriptions
-            const userText = message.serverContent?.modelTurn?.parts?.[0]?.text;
-            if (userText) {
-               // Output transcription
-               this.onMessage("siya", userText);
             }
 
             // Handle Function Calls
@@ -226,7 +252,6 @@ export class LiveSessionManager {
           }
         }
       });
-
     } catch (error: any) {
       if (error?.message === "Permission denied" || error?.name === "NotAllowedError") {
         console.warn("Microphone permission denied by user.");
@@ -251,11 +276,14 @@ export class LiveSessionManager {
       for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      const buffer = new Int16Array(bytes.buffer);
-      const audioBuffer = this.playbackContext.createBuffer(1, buffer.length, 24000);
+      
+      const dataView = new DataView(bytes.buffer);
+      const pcmLength = Math.floor(len / 2);
+      const audioBuffer = this.playbackContext.createBuffer(1, pcmLength, 24000);
       const channelData = audioBuffer.getChannelData(0);
-      for (let i = 0; i < buffer.length; i++) {
-        channelData[i] = buffer[i] / 32768.0;
+      
+      for (let i = 0; i < pcmLength; i++) {
+        channelData[i] = dataView.getInt16(i * 2, true) / 32768.0;
       }
       
       const source = this.playbackContext.createBufferSource();
@@ -272,6 +300,7 @@ export class LiveSessionManager {
       this.isPlaying = true;
       
       source.onended = () => {
+        if (!this.isActive) return;
         if (this.playbackContext && this.playbackContext.currentTime >= this.nextPlayTime - 0.1) {
           this.isPlaying = false;
           this.updateState("listening");
@@ -284,15 +313,16 @@ export class LiveSessionManager {
 
   private stopPlayback() {
     if (this.playbackContext) {
-      this.playbackContext.close();
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      this.playbackContext = new AudioContextClass({ sampleRate: 24000 });
+      // Rather than closing the context which would require a new user gesture to resume,
+      // we just fast-forward the play time so scheduled buffers are dropped conceptually.
+      // A better way is to track source nodes, but for now we can just reset nextPlayTime.
       this.nextPlayTime = this.playbackContext.currentTime;
       this.isPlaying = false;
     }
   }
 
   stop() {
+    this.isActive = false;
     if (this.processor) {
       this.processor.disconnect();
       this.processor = null;
@@ -310,6 +340,10 @@ export class LiveSessionManager {
       this.audioContext = null;
     }
     this.stopPlayback();
+    if (this.playbackContext) {
+      this.playbackContext.close();
+      this.playbackContext = null;
+    }
     
     if (this.sessionPromise) {
       this.sessionPromise.then(session => session.close()).catch(() => {});
@@ -320,6 +354,7 @@ export class LiveSessionManager {
   }
 
   sendText(text: string) {
+    if (!this.isActive) return;
     if (this.idleTimer) {
       window.clearTimeout(this.idleTimer);
       this.idleTimer = null;

@@ -8,14 +8,11 @@ async function startServer() {
 
   app.use(express.json());
 
-  // API route to provide Gemini Key to frontend for WebSockets
-  // Note: For a production app, consider a websocket proxy instead of exposing the key,
-  // but this is necessary for the Live API SDK in the browser.
+  // API route to provide Gemini Key to frontend
   app.get("/api/config", (req, res) => {
     res.json({ apiKey: process.env.GEMINI_API_KEY });
   });
 
-  // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -25,7 +22,6 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    // For Express 4
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

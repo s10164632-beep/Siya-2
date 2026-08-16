@@ -239,11 +239,8 @@ export default function App() {
       {/* Header */}
       <header className="absolute top-0 left-0 w-full flex justify-between items-start z-20 shrink-0 px-6 py-4 md:px-12 md:py-6">
         <div className="flex items-center gap-3 mt-1">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-violet-500 to-pink-500 flex items-center justify-center font-bold text-sm shadow-lg">
-            S
-          </div>
           <div className="flex flex-col">
-            <h1 className="text-xl font-serif font-medium tracking-wide opacity-90 leading-tight">Siya</h1>
+            <h1 className="text-2xl font-serif font-bold tracking-widest opacity-90 leading-tight uppercase bg-clip-text text-transparent bg-gradient-to-r from-violet-400 to-pink-400">SIYA</h1>
             <span className="text-[10px] text-white/50 tracking-wider uppercase font-medium">Developed by Shivam Yadav</span>
           </div>
         </div>
@@ -348,7 +345,7 @@ export default function App() {
         </div>
 
         {/* Right Column: User Status */}
-        <div className="flex w-[30%] lg:w-[25%] h-full flex-col justify-center gap-4 z-10">
+        <div className="flex w-[30%] lg:w-[25%] h-full flex-col justify-center gap-4 z-10 pointer-events-auto">
           <div className="h-6 flex justify-end">
             <AnimatePresence>
               {appState === "listening" && (
@@ -365,7 +362,6 @@ export default function App() {
             </AnimatePresence>
           </div>
         </div>
-
       </main>
 
       {/* Controls */}
